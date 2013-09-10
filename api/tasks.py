@@ -86,8 +86,13 @@ def converge_node(node_id):
 @task
 def run_node(app_id, command):
     app = App.objects.get(id=app_id)
-    node = app.node_set.order_by('?')[0]
-    release = app.release_set.order_by('-created')[0]
+    nodes = app.formation.node_set.order_by('?')
+    releases = app.release_set.order_by('-created')
+    if not nodes:
+        raise EnvironmentError('No nodes available to run command')
+    if not releases:
+        raise EnvironmentError('No release to run command against')
+    node, release = nodes[0], releases[0]
     # prepare ssh command
     version = release.version
     docker_args = ' '.join(
@@ -125,3 +130,30 @@ def destroy_formation(formation_id):
     group([destroy_layer.s(l.id) for l in formation.layer_set.all()]).apply_async().join()
     formation.delete()
     return formation_id
+
+
+@task
+def publish_user(username):
+    user = User.objects.get(username=username)
+    data = {'id': username, 'ssh_keys': {}}
+    for k in user.key_set.all():
+        data['ssh_keys'][k.id] = k.public
+    return CM.publish_user(username, data)
+
+
+@task
+def publish_app(app_id, delete=False):
+    if delete is True:
+        return CM.purge_app(app_id)
+    app = App.objects.get(id=app_id)
+    data = app.calculate()
+    return CM.publish_app(app_id, data)
+
+
+@task
+def publish_formation(formation_id, delete=False):
+    if delete is True:
+        return CM.purge_formation(formation_id)
+    formation = Formation.objects.get(id=formation_id)
+    data = formation.calculate()
+    return CM.publish_formation(formation_id, data)

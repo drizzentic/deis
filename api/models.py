@@ -15,6 +15,7 @@ from celery.canvas import group
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.db import models
+from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 from django.dispatch.dispatcher import Signal
 from django.utils.encoding import python_2_unicode_compatible
@@ -435,22 +436,21 @@ class App(UuidAuditedModel):
         """Calculate and update the application databag"""
         d = {}
         d['id'] = self.id
-        release = self.release_set.all().order_by('-created')[0]
         d['release'] = {}
-        d['release']['version'] = release.version
-        d['release']['config'] = release.config.values
-        d['release']['image'] = release.image
-        d['release']['build'] = {}
-        if release.build:
-            d['release']['build']['url'] = release.build.url
-            d['release']['build']['procfile'] = release.build.procfile
-        # add collaborators TODO: add sharing
+        releases = self.release_set.all().order_by('-created')
+        if releases:
+            release = releases[0]
+            d['release']['version'] = release.version
+            d['release']['config'] = release.config.values
+            d['release']['image'] = release.image
+            d['release']['build'] = {}
+            if release.build:
+                d['release']['build']['url'] = release.build.url
+                d['release']['build']['procfile'] = release.build.procfile
+        # TODO: add proper sharing and access controls
         d['users'] = {}
         for u in (self.owner.username,):
             d['users'][u] = 'admin'
-#         # call a celery task to update the data bag
-#         if settings.CHEF_ENABLED:
-#             controller.update_application.delay(self.id, d).wait()  # @UndefinedVariable
         return d
 
 
@@ -730,6 +730,42 @@ def new_release(sender, **kwargs):
         build=build, version=new_version)
     return release
 
+# define update/delete callbacks for synchronizing
+# models with the configuration management backend
+
+
+def update_user(sender, **kwargs):
+    tasks.publish_user.delay(kwargs['instance'].username).wait()
+
+
+def update_key(sender, **kwargs):
+    tasks.publish_user.delay(kwargs['instance'].owner.username).wait()
+
+
+def update_app(sender, **kwargs):
+    tasks.publish_app.delay(kwargs['instance'].id).wait()
+
+
+def delete_app(sender, **kwargs):
+    tasks.publish_app.delay(kwargs['instance'].id, delete=True).wait()
+
+
+def update_formation(sender, **kwargs):
+    tasks.publish_formation.delay(kwargs['instance'].id).wait()
+
+
+def delete_formation(sender, **kwargs):
+    tasks.publish_formation.delay(kwargs['instance'].id, delete=True).wait()
+
+# use django signals to synchronize database updates with
+# the configuration management backend
+post_save.connect(update_user, sender=User)
+post_save.connect(update_key, sender=Key)
+post_delete.connect(update_key, sender=Key)
+post_save.connect(update_app, sender=App)
+post_delete.connect(delete_app, sender=App)
+post_save.connect(update_formation, sender=Formation)
+post_delete.connect(delete_formation, sender=Formation)
 
 # import tasks after models are defined
 from api import tasks
