@@ -31,6 +31,10 @@ def destroy_formation(formation):
     return formation
 
 
+def converge_controller():
+    return None
+
+
 def publish_user(username, data):
     path = os.path.join(settings.TEMPDIR, 'user-{}'.format(username))
     with open(path, 'w') as f:

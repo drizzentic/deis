@@ -133,21 +133,31 @@ def destroy_formation(formation_id):
 
 
 @task
-def publish_user(username):
-    user = User.objects.get(username=username)
-    data = {'id': username, 'ssh_keys': {}}
-    for k in user.key_set.all():
-        data['ssh_keys'][k.id] = k.public
-    return CM.publish_user(username, data)
+def converge_controller():
+    CM.converge_controller()
 
 
 @task
-def publish_app(app_id, delete=False):
-    if delete is True:
-        return CM.purge_app(app_id)
+def publish_user(username, data):
+    CM.publish_user(username, data)
+    converge_controller.delay().wait()
+    return username
+
+
+@task
+def publish_app(app_id):
     app = App.objects.get(id=app_id)
     data = app.calculate()
-    return CM.publish_app(app_id, data)
+    CM.publish_app(app_id, data)
+    converge_controller.delay().wait()
+    return app_id
+
+
+@task
+def purge_app(app_id):
+    CM.purge_app(app_id)
+    converge_controller.delay().wait()
+    return app_id
 
 
 @task

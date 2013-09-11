@@ -663,9 +663,8 @@ class Build(UuidAuditedModel):
         # recalculate the formation databag including the new
         # build and release
         databag = formation.calculate()
-        # if enabled, force-converge all of the chef nodes
-        if settings.CONVERGE_ON_PUSH is True:
-            formation.converge(databag)
+        # force-converge all of the chef nodes
+        formation.converge(databag)
         # return the databag object so the git-receive hook
         # can tell the user about proxy URLs, etc.
         return databag
@@ -730,16 +729,32 @@ def new_release(sender, **kwargs):
         build=build, version=new_version)
     return release
 
+
+def calculate(self):
+    """
+    Calculate configuration management representation
+    for this user account
+    """
+    data = {'id': self.username, 'ssh_keys': {}}
+    for k in self.key_set.all():
+        data['ssh_keys'][k.id] = k.public
+    return data
+
+# attach to built-in django user
+User.calculate = calculate
+
 # define update/delete callbacks for synchronizing
 # models with the configuration management backend
 
 
 def update_user(sender, **kwargs):
-    tasks.publish_user.delay(kwargs['instance'].username).wait()
+    user = kwargs['instance']
+    tasks.publish_user.delay(user.username, user.calculate()).wait()
 
 
 def update_key(sender, **kwargs):
-    tasks.publish_user.delay(kwargs['instance'].owner.username).wait()
+    user = kwargs['instance'].owner
+    tasks.publish_user.delay(user.username, user.calculate()).wait()
 
 
 def update_app(sender, **kwargs):
@@ -747,7 +762,7 @@ def update_app(sender, **kwargs):
 
 
 def delete_app(sender, **kwargs):
-    tasks.publish_app.delay(kwargs['instance'].id, delete=True).wait()
+    tasks.purge_app.delay(kwargs['instance'].id).wait()
 
 
 def update_formation(sender, **kwargs):
@@ -755,7 +770,7 @@ def update_formation(sender, **kwargs):
 
 
 def delete_formation(sender, **kwargs):
-    tasks.publish_formation.delay(kwargs['instance'].id, delete=True).wait()
+    tasks.purge_formation.delay(kwargs['instance'].id).wait()
 
 # use django signals to synchronize database updates with
 # the configuration management backend

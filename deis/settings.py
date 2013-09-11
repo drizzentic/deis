@@ -268,7 +268,6 @@ djcelery.setup_loader()
 # default deis settings
 
 
-CONVERGE_ON_PUSH = True
 DEIS_LOG_DIR = os.path.abspath(os.path.join(__file__, '..', '..', 'logs'))
 LOG_LINES = 1000
 
