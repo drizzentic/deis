@@ -140,6 +140,10 @@ class FormationViewSet(OwnerViewSet):
                                 status=HTTP_400_BAD_REQUEST)
             raise e
 
+    def post_save(self, formation, created=False, **kwargs):
+        if created:
+            formation.build()
+
     def scale(self, request, **kwargs):
         new_structure = {}
         try:
@@ -283,11 +287,7 @@ class AppViewSet(OwnerViewSet):
 
     def post_save(self, app, created=False, **kwargs):
         if created:
-            config = models.Config.objects.create(
-                version=1, owner=app.owner, app=app, values={})
-            models.Release.objects.create(
-                version=1, owner=app.owner, app=app, config=config)
-        app.formation.publish()
+            app.build()
         group(*[tasks.converge_formation.si(app.formation),  # @UndefinedVariable
                 tasks.converge_controller.si()]).apply_async().join()  # @UndefinedVariable
 
@@ -329,7 +329,6 @@ class AppViewSet(OwnerViewSet):
     def destroy(self, request, **kwargs):
         app = self.get_object()
         app.destroy()
-        app.formation.publish()
         group(*[tasks.converge_formation.si(app.formation),  # @UndefinedVariable
                 tasks.converge_controller.si()]).apply_async().join()  # @UndefinedVariable
         return Response(status=status.HTTP_204_NO_CONTENT)

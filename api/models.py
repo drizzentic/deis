@@ -14,6 +14,7 @@ from celery.canvas import group
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.db import models
+from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.dispatch.dispatcher import Signal
 from django.utils.encoding import python_2_unicode_compatible
@@ -23,8 +24,6 @@ from provider import import_provider_module
 
 
 # define custom signals
-converge_formation_signal = Signal(providing_args=['user', 'formation'])
-converge_app_signal = Signal(providing_args=['user', 'app'])
 release_signal = Signal(providing_args=['user', 'app'])
 
 # define custom exceptions
@@ -222,9 +221,8 @@ class Formation(UuidAuditedModel):
                 'domain': self.domain,
                 'nodes': self.nodes}
 
-    def save(self, *args, **kwargs):
-        super(Formation, self).save(*args, **kwargs)
-        self.publish()
+    def build(self):
+        tasks.build_formation.delay(self).wait()
 
     def destroy(self, *args, **kwargs):
         tasks.destroy_formation.delay(self).wait()
@@ -461,9 +459,13 @@ class App(UuidAuditedModel):
                 'formation': self.formation.id,
                 'containers': dict(self.containers)}
 
-    def save(self, *args, **kwargs):
-        super(App, self).save(*args, **kwargs)
-        self.publish()
+    def build(self):
+        config = Config.objects.create(
+            version=1, owner=self.owner, app=self, values={})
+        Release.objects.create(
+            version=1, owner=self.owner, app=self, config=config)
+        self.formation.publish()
+        tasks.build_app.delay(self).wait()
 
     def destroy(self):
         tasks.destroy_app.delay(self).wait()
@@ -811,29 +813,29 @@ def _user_publish(self):
     CM.publish_user(self.flat(), self.calculate())
 
 
-def _user_save(self, *args, **kwargs):
-    super(User, self).save(*args, **kwargs)
-    self.publish()
-
-
 # attach to built-in django user
 User.flat = _user_flat
 User.calculate = _user_calculate
 User.publish = _user_publish
-User.save = _user_save
 
 # define update/delete callbacks for synchronizing
 # models with the configuration management backend
 
+
+def _publish_to_cm(**kwargs):
+    kwargs['instance'].publish()
+
+
+def _publish_user_to_cm(**kwargs):
+    if kwargs.get('update_fields') == frozenset(['last_login']):
+        return
+    kwargs['instance'].publish()
+
 # use django signals to synchronize database updates with
 # the configuration management backend
-# post_save.connect(publish_user, sender=User, dispatch_uid='api.models')
-# post_save.connect(publish_user, sender=Key, dispatch_uid='api.models')
-# post_delete.connect(publish_user, sender=Key, dispatch_uid='api.models')
-# post_save.connect(publish_app, sender=App, dispatch_uid='api.models')
-# post_delete.connect(purge_app, sender=App, dispatch_uid='api.models')
-# post_save.connect(publish_formation, sender=Formation, dispatch_uid='api.models')
-# post_delete.connect(purge_formation, sender=Formation, dispatch_uid='api.models')
+post_save.connect(_publish_to_cm, sender=App, dispatch_uid='api.models')
+post_save.connect(_publish_to_cm, sender=Formation, dispatch_uid='api.models')
+post_save.connect(_publish_user_to_cm, sender=User, dispatch_uid='api.models')
 
 
 # now that we've defined models that may be imported by celery tasks

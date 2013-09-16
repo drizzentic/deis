@@ -62,9 +62,19 @@ def run_node(node, command):
 
 
 @task
-def destroy_app(app):
-    CM.purge_app(app.flat())
-    app.delete()
+def build_formation(formation):
+    return
+
+
+@task
+def destroy_formation(formation):
+    app_tasks = [destroy_app.si(a) for a in formation.app_set.all()]
+    node_tasks = [destroy_node.si(n) for n in formation.node_set.all()]
+    layer_tasks = [destroy_layer.si(l) for l in formation.layer_set.all()]
+    group(app_tasks + node_tasks).apply_async().join()
+    group(layer_tasks).apply_async().join()
+    CM.purge_formation(formation.flat())
+    formation.delete()
 
 
 @task
@@ -78,14 +88,14 @@ def converge_formation(formation):
 
 
 @task
-def destroy_formation(formation):
-    app_tasks = [destroy_app.si(a) for a in formation.app_set.all()]
-    node_tasks = [destroy_node.si(n) for n in formation.node_set.all()]
-    layer_tasks = [destroy_layer.si(l) for l in formation.layer_set.all()]
-    group(app_tasks + node_tasks).apply_async().join()
-    group(layer_tasks).apply_async().join()
-    CM.purge_formation(formation.flat())
-    formation.delete()
+def build_app(app):
+    return
+
+
+@task
+def destroy_app(app):
+    CM.purge_app(app.flat())
+    app.delete()
 
 
 @task

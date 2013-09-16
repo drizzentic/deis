@@ -69,6 +69,7 @@ import yaml
 from docopt import docopt
 from docopt import DocoptExit
 import requests
+import tempfile
 
 __version__ = '0.0.8'
 
@@ -467,7 +468,7 @@ class DeisClient(object):
             data = response.json()
             print('=== Apps')
             for item in data['results']:
-                print(item['id'])
+                print('{id} {containers}'.format(**item))
         else:
             raise ResponseError(response)
 
@@ -599,14 +600,14 @@ class DeisClient(object):
         """
         List build history for a formation
 
-        Usage: deis builds:list
+        Usage: deis builds:list [--app=<app>]
         """
-        formation = args.get('--formation')
-        if not formation:
-            formation = self._session.formation
-        response = self._dispatch('get', "/api/formations/{}/builds".format(formation))
+        app = args.get('--app')
+        if not app:
+            app = self._session.app
+        response = self._dispatch('get', "/api/apps/{}/builds".format(app))
         if response.status_code == requests.codes.ok:  # @UndefinedVariable
-            print("=== {} Builds".format(formation))
+            print("=== {} Builds".format(app))
             data = response.json()
             for item in data['results']:
                 print("{0[uuid]:<23} {0[created]}".format(item))
@@ -718,30 +719,31 @@ class DeisClient(object):
         """
         List containers for a formation
 
-        Usage: deis containers:list
+        Usage: deis containers:list [--app=<app>]
         """
-        formation = args.get('--formation')
-        if not formation:
-            formation = self._session.formation
+        app = args.get('--app')
+        if not app:
+            app = self._session.get_app()
         response = self._dispatch('get',
-                                  "/api/formations/{}/containers".format(formation))
-        databag = self.formations_calculate({}, quiet=True)
-        procfile = databag['release']['build'].get('procfile', {})
-        if response.status_code == requests.codes.ok:  # @UndefinedVariable
-            data = response.json()
-            print("=== {} Containers".format(formation))
-            c_map = {}
-            for item in data['results']:
-                c_map.setdefault(item['type'], []).append(item)
-            print()
-            for c_type in c_map.keys():
-                command = procfile.get(c_type, '<none>')
-                print("--- {c_type}: `{command}`".format(**locals()))
-                for c in c_map[c_type]:
-                    print("{type}.{num} up {created} ({node})".format(**c))
-                print()
-        else:
+                                  "/api/apps/{}/containers".format(app))
+        if response.status_code != requests.codes.ok:  # @UndefinedVariable
             raise ResponseError(response)
+        containers = response.json()
+        response = self._dispatch('get', "/api/apps/{}/builds".format(app))
+        if response.status_code != requests.codes.ok:  # @UndefinedVariable
+            raise ResponseError(response)
+        procfile = json.loads(response.json()['results'][0]['procfile'])
+        print("=== {} Containers".format(app))
+        c_map = {}
+        for item in containers['results']:
+            c_map.setdefault(item['type'], []).append(item)
+        print()
+        for c_type in c_map.keys():
+            command = procfile.get(c_type, '<none>')
+            print("--- {c_type}: `{command}`".format(**locals()))
+            for c in c_map[c_type]:
+                print("{type}.{num} up {created} ({node})".format(**c))
+            print()
 
     def containers_scale(self, args):
         """
@@ -749,11 +751,11 @@ class DeisClient(object):
 
         Example: deis containers:scale web=4 worker=2
 
-        Usage: deis containers:scale <type=num>...
+        Usage: deis containers:scale <type=num>... [--app=<app>]
         """
-        formation = args.get('--formation')
-        if not formation:
-            formation = self._session.formation
+        app = args.get('--app')
+        if not app:
+            app = self._session.get_app()
         body = {}
         for type_num in args.get('<type=num>'):
             typ, count = type_num.split('=')
@@ -764,7 +766,7 @@ class DeisClient(object):
             progress.start()
             before = time.time()
             response = self._dispatch('post',
-                                      "/api/formations/{}/scale/containers".format(formation),
+                                      "/api/apps/{}/scale".format(app),
                                       json.dumps(body))
         finally:
             progress.cancel()
@@ -933,7 +935,7 @@ class DeisClient(object):
         The name of the default layer is "runtime" unless overriden
         with the --layer=<layer> option.
 
-        Usage: deis formations:create <id> [--domain=<domain>] [--flavor=<flavor> --layer=<layer>]
+        Usage: deis formations:create <id> [--flavor=<flavor>] [--domain=<domain> --layer=<layer>]
         """
         body = {'id': args['<id>'], 'domain': args.get('--domain')}
         flavor = args.get('--flavor')
@@ -1002,8 +1004,7 @@ class DeisClient(object):
             data = response.json()
             print("=== Formations")
             for item in data['results']:
-                formation = item['id']
-                print("{}".format(formation))
+                print("{id} {nodes}".format(**item))
         else:
             raise ResponseError(response)
 
@@ -1382,21 +1383,6 @@ class DeisClient(object):
         """
         return self.providers_list(args)
 
-    def scale(self, args):
-        """
-        Scale application containers or formation nodes
-
-        Proxies to containers:scale by default. If a formation
-        is specified nodes:scale will be used.
-
-        Usage: deis scale [--app=<app> | --formation=<formation>] <type=num>...
-        """
-        formation = args.get('--formation')
-        if formation:
-            args.update({'<formation>': formation})
-            return self.nodes_scale(args)
-        return self.containers_scale(args)
-
     def ssh(self, args):
         """
         SSH into a node
@@ -1407,9 +1393,18 @@ class DeisClient(object):
         response = self._dispatch('get',
                                   "/api/nodes/{node}".format(**locals()))
         if response.status_code == requests.codes.ok:  # @UndefinedVariable
-            body = response.json()
+            node = response.json()
+            response = self._dispatch('get',
+                                      '/api/formations/{formation}/layers/{layer}'.format(**node))
+            if response.status_code != requests.codes.ok:  # @UndefinedVariable
+                raise ResponseError(response)
+            layer = response.json()
+            _, key_path = tempfile.mkstemp()
+            os.chmod(key_path, 0600)
+            with open(key_path, 'w') as f:
+                f.write(layer['ssh_private_key'])
             ssh_args = ['-o UserKnownHostsFile=/dev/null', '-o StrictHostKeyChecking=no',
-                        'ubuntu@{fqdn}'.format(**body)]
+                        '-i', key_path, 'ubuntu@{fqdn}'.format(**node)]
             command = args.get('<command>')
             if command:
                 ssh_args.extend(command)
@@ -1607,6 +1602,8 @@ def parse_args(cmd):
         'create': 'apps:create',
         'destroy': 'apps:destroy',
         'ps': 'containers:list',
+        'scale': 'containers:scale',
+        'converge': 'formations:converge',
     }
     if cmd == 'help':
         cmd = sys.argv[-1]
